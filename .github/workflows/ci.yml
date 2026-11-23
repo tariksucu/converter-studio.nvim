@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+
+# Cancel in-progress runs for the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: StyLua
+        uses: JohnnyMorganz/stylua-action@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: 2.6.0
+          args: --check lua plugin tests
+
+      - name: luacheck
+        uses: lunarmodules/luacheck@v1
+        with:
+          args: lua plugin tests
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported release, the current one and the next one.
+        neovim: [v0.10.4, stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The tests convert real files with these; without them those tests are skipped.
+      # LibreOffice is left out (too large for every run).
+      - name: Install conversion programs
+        if: matrix.neovim == 'stable'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            ffmpeg pandoc ghostscript tesseract-ocr tesseract-ocr-eng imagemagick
+
+      - name: Set up Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+
+      - name: Run tests
+        run: make test

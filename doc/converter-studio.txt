@@ -1,0 +1,255 @@
+*converter-studio.txt*        Convert the current file to another format
+
+                    CONVERTER STUDIO FOR NEOVIM
+
+Convert the file you are editing to another format: images, video, audio,
+documents, spreadsheets, e-books, subtitles and data files. Conversions run on
+your computer first; the Converter Studio desktop app and the online service
+at https://converter.studio are used only when you choose them.
+
+==============================================================================
+CONTENTS                                           *converter-studio-contents*
+
+  1. Where conversions run ................. |converter-studio-layers|
+  2. Requirements .......................... |converter-studio-requirements|
+  3. Commands .............................. |converter-studio-commands|
+  4. Options ............................... |converter-studio-setup|
+  5. Programs on this computer ............. |converter-studio-programs|
+  6. The desktop app ....................... |converter-studio-desktop|
+  7. The cloud ............................. |converter-studio-cloud|
+  8. Lua API ............................... |converter-studio-api|
+  9. Privacy ............................... |converter-studio-privacy|
+
+==============================================================================
+1. WHERE CONVERSIONS RUN                             *converter-studio-layers*
+
+On this computer ~
+    Built in, with nothing to install: CSV to JSON or YAML, JSON to CSV or
+    YAML, SRT to WebVTT and back. With the programs you have installed:
+    FFmpeg (video and audio), LibreOffice (Word, Excel, PowerPoint and
+    OpenDocument files), Pandoc (Markdown, HTML, Word, EPUB), ImageMagick
+    (images), Ghostscript (smaller PDFs) and Tesseract (text recognition).
+    The file never leaves your computer.
+
+The Converter Studio desktop app ~
+    Off until you turn it on (|converter-studio-desktop|). Formats that no
+    program on this computer converts are handed to the app, which shows the
+    file with the format chosen; you press Convert there.
+
+The cloud ~
+    Only when you choose it: `:ConverterStudio cloud {format}`, or "In the
+    cloud…" in the picker. The file is uploaded to converter.studio,
+    converted, and the result is saved next to the original. It uses credits
+    of your Converter Studio account. A conversion that fails on this
+    computer is never sent to the cloud by itself: you are asked first.
+
+Results are saved next to the source file and never replace a file: when
+`photo.webp` exists, the result is `photo (2).webp`.
+
+==============================================================================
+2. REQUIREMENTS                                *converter-studio-requirements*
+
+- Neovim 0.10 or later. No other plugin.
+- For conversions on this computer: any of the programs in
+  |converter-studio-programs|, found on your PATH or in their usual install
+  folders. Run |:checkhealth| `converter-studio` to see what was found.
+- For the desktop app: Converter Studio for desktop 0.1.11 or later
+  (https://converter.studio/download).
+- For the cloud: `curl` and an API key of a Converter Studio account.
+
+==============================================================================
+3. COMMANDS                                        *converter-studio-commands*
+
+                                                            *:ConverterStudio*
+:ConverterStudio
+    Lists the formats the current file can become and where each one runs
+    ("on this computer (ImageMagick)", "Converter Studio desktop app"), with
+    "In the cloud…" last. Uses |vim.ui.select()|, so a picker plugin that
+    replaces it is used too.
+
+:ConverterStudio {format}
+    Converts the current file to {format} on this computer, or with the
+    desktop app when it is turned on and nothing here converts it. {format}
+    is a format id such as `webp`, `pdf`, `mp4`, `md`. A few conversions
+    have a variant: `pdf:ocr` makes a searchable PDF from an image with
+    Tesseract. Press <Tab> to complete the formats of the current file.
+
+:ConverterStudio cloud [{format}]
+    Uploads the current file to converter.studio and converts it there
+    (uses credits). Without {format}, lists the formats Converter Studio
+    offers for the file.
+
+:ConverterStudio desktop {format}
+    Hands the current file to the Converter Studio desktop app.
+
+:ConverterStudio cancel
+    Stops every conversion that is running. A cloud conversion that has
+    already started at Converter Studio may still finish there and use its
+    credits; nothing is saved.
+
+The buffer must be saved: the file on disk is converted, so a buffer with
+changes that are not written is refused.
+
+                                                  *<Plug>(converter-studio)*
+<Plug>(converter-studio)
+    Opens the picker. For example: >lua
+        vim.keymap.set('n', '<leader>cc', '<Plug>(converter-studio)')
+<
+
+==============================================================================
+4. OPTIONS                                            *converter-studio-setup*
+
+Calling `setup()` is optional: everything works with the defaults. Options
+can also be given as a table in `vim.g.converter_studio` before the plugin
+is used. The defaults: >lua
+
+    require('converter-studio').setup({
+      -- Programs by name: a path, or false to never use one.
+      -- Names: ffmpeg, soffice, pandoc, magick, gs, tesseract.
+      tools = {},
+      -- Seconds a conversion on this computer may run.
+      timeout = 1800,
+      -- Tesseract's languages ('eng', 'deu', 'eng+deu'…).
+      -- Unset: English when installed, else the first installed language.
+      ocr_language = nil,
+      desktop = {
+        -- Use the Converter Studio desktop app when installed.
+        enabled = false,
+      },
+      cloud = {
+        -- A string, or a function that returns the key.
+        -- Unset: the environment variable CONVERTER_STUDIO_API_KEY.
+        api_key = nil,
+        api_url = 'https://converter.studio/api',
+        -- A cloud conversion that costs more credits asks first
+        -- (0: always ask).
+        max_credits = 20,
+      },
+    })
+<
+                                                   *converter-studio-tools*
+`tools`
+    For example `tools = { magick = '/opt/im/bin/magick', soffice = false }`.
+
+                                                 *converter-studio-api-key*
+`cloud.api_key`
+    The plugin never writes the key anywhere. Keep it out of a configuration
+    file that you share: set the environment variable, or read it from a
+    password manager with a function: >lua
+        cloud = {
+          api_key = function()
+            return vim.trim(vim.fn.system({ 'pass', 'converter-studio' }))
+          end,
+        },
+<
+`cloud.api_url`
+    Must start with https:// (plain http only for localhost, for a test
+    server).
+
+==============================================================================
+5. PROGRAMS ON THIS COMPUTER                       *converter-studio-programs*
+
+The plugin asks each program what it can do; nothing is assumed:
+
+FFmpeg       Video to MP4 (H.264/AAC), WebM (VP9/Opus), MOV, MKV and GIF;
+             video and audio to MP3, M4A, WAV, FLAC, OGG, Opus, AAC and
+             AIFF; an animated GIF to MP4, WebM or MOV. Only the encoders
+             your FFmpeg has are offered.
+LibreOffice  DOCX, DOC, ODT and RTF to PDF and to each other; XLSX, XLS,
+             ODS and CSV to PDF and to each other; PPTX, PPT and ODP to PDF
+             and to each other; HTML to PDF, DOCX and ODT. Runs with a
+             profile of its own, so an open LibreOffice window is not
+             disturbed.
+Pandoc       Markdown, HTML, DOCX, ODT, EPUB, RTF and FB2 to HTML, DOCX,
+             ODT, EPUB, Markdown, RTF, TXT and FB2; to PDF when a PDF engine
+             is installed (typst, tectonic, xelatex, lualatex, pdflatex,
+             weasyprint or wkhtmltopdf). Images inside a Word file are not
+             extracted to Markdown.
+ImageMagick  JPG, PNG, WebP, HEIC, AVIF, GIF, BMP, TIFF, ICO and SVG to
+             JPG, PNG, WebP, AVIF, GIF, TIFF, BMP, ICO and PDF: only the
+             formats your build reads and writes (HEIC needs libheif).
+             ImageMagick 7 (`magick`) or 6 (`convert`, not on Windows).
+Ghostscript  A smaller PDF (`report-compressed.pdf`); when it would not be
+             smaller, no file is made. EPS to PDF.
+Tesseract    Text recognition of images: TXT, or a searchable PDF
+             (`pdf:ocr`).
+
+When two programs make the same format, LibreOffice is used for office
+documents and Pandoc for Markdown, HTML and e-books; the picker lists both.
+
+Each program runs with an argument list (never through a shell), in a hidden
+work folder next to the file (`.converter-studio-…`, removed afterwards),
+with the time limit of `timeout`. `:ConverterStudio cancel` and leaving
+Neovim stop it.
+
+==============================================================================
+6. THE DESKTOP APP                                  *converter-studio-desktop*
+
+Turn it on with `desktop = { enabled = true }`. The file is handed over with
+a `converter-studio://convert` link that the system opens: the app asks
+whether to take the files from Neovim (Continue or Ignore), then shows them
+in its Convert tab with the format chosen. Nothing runs until you press
+Convert, and nothing is uploaded.
+
+- Needs Converter Studio for desktop 0.1.11 or later. An older version only
+  comes to the front.
+- Not used when Neovim runs over SSH or inside WSL: the files are not on the
+  computer where the app runs.
+- The Snap and Flatpak builds of the app only see files in your home folder.
+
+==============================================================================
+7. THE CLOUD                                          *converter-studio-cloud*
+
+1. Make a free account at https://converter.studio and an API key on your
+   account page: https://converter.studio/account#api-keys
+2. Set the environment variable CONVERTER_STUDIO_API_KEY (or
+   |converter-studio-api-key|).
+3. `:ConverterStudio cloud webp`, or "In the cloud…" in the picker.
+
+Each conversion uses credits of your account: most image and document
+conversions cost 1 credit; video and audio cost more, by length. A
+conversion that costs more than `cloud.max_credits` asks first; saying no
+costs nothing. A failed conversion costs nothing. Prices and plans:
+https://converter.studio/pricing
+
+The list of formats Converter Studio offers (no file, no key) is read when
+you open "In the cloud…" or use the desktop app, and kept for a day in
+Neovim's cache folder.
+
+==============================================================================
+8. LUA API                                              *converter-studio-api*
+
+                                                  *converter-studio.convert()*
+require('converter-studio').convert({opts})
+    Converts a file. {opts}:
+      file     path (default: the current buffer's file)
+      to       format id, or a variant such as `pdf:ocr`
+      route    'auto' (default), 'local', 'desktop' or 'cloud'
+      on_done  function(err, path), called instead of a message on error
+    For example, from a file explorer's mapping: >lua
+        require('converter-studio').convert({ file = path, to = 'webp' })
+<
+                                                     *converter-studio.pick()*
+require('converter-studio').pick({path})
+    The picker for {path} (default: the current buffer's file).
+
+                                                   *converter-studio.cancel()*
+require('converter-studio').cancel()
+    Stops every conversion that is running.
+
+==============================================================================
+9. PRIVACY                                          *converter-studio-privacy*
+
+- On this computer and with the desktop app, files stay on your computer.
+- In the cloud, the file is sent to converter.studio over HTTPS, converted,
+  and deleted: the upload right after the conversion, the result after six
+  hours. Requests name the plugin and its version
+  (`X-Converter-Studio-Client: neovim/…`).
+- The API key is passed to curl on its standard input, not on its command
+  line, and is never shown in a message.
+- No telemetry.
+
+Privacy policy: https://converter.studio/privacy
+
+==============================================================================
+ vim:tw=78:ts=8:noet:ft=help:norl:
