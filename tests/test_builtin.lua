@@ -26,12 +26,12 @@ T['csv']['to JSON keeps the column order and the text of every value'] = functio
       '  {',
       '    "name": "Ada",',
       '    "age": "036",',
-      '    "name (2)": "x"',
+      '    "name_2": "x"',
       '  },',
       '  {',
       '    "name": "Alan",',
       '    "age": "",',
-      '    "name (2)": ""',
+      '    "name_2": ""',
       '  }',
       ']',
       '',
@@ -65,7 +65,60 @@ end
 
 T['json']['to CSV: columns in order of appearance, nested values as JSON'] = function()
   local csv = builtin.json_to_csv('[{"id": 1, "tags": ["a","b"]}, {"id": 2, "name": "x,y", "ok": false, "n": null}]')
-  eq(csv, 'id,tags,name,ok,n\n1,"[""a"",""b""]",,,\n2,,"x,y",false,\n')
+  eq(csv, 'id,tags,name,ok,n\r\n1,"[""a"",""b""]",,,\r\n2,,"x,y",false,\r\n')
+end
+
+T['csv']['every column gets a name of its own'] = function()
+  eq(builtin.column_names({ 'column2' }, 2), { 'column2', 'column2_2' })
+  eq(builtin.column_names({ 'id', 'id', 'id_2' }, 3), { 'id', 'id_3', 'id_2' })
+  eq(builtin.column_names({ '', 'column1' }, 2), { 'column1_2', 'column1' })
+  eq(builtin.separator('\r\na;b\n'), ';')
+  eq(builtin.separator('"a;b",c\n'), ',')
+end
+
+T['json']['numbers as JSON writes them, nothing else'] = function()
+  for _, bad in ipairs({ '01', '1.', '.5', '1e', '+1', '-' }) do
+    err(function()
+      builtin.decode_json(bad)
+    end)
+  end
+  eq(builtin.decode_json('-0.10e+2'), { kind = 'number', text = '-0.10e+2' })
+end
+
+-- The cases every editor plugin runs (the same file in the VS Code, JetBrains and Sublime ones).
+T['shared data cases'] = function()
+  local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h')
+  local file = assert(io.open(root .. '/data-cases.json', 'rb'))
+  local cases = vim.json.decode(file:read('*a')).cases
+  file:close()
+  local convert = {
+    ['csv>json'] = function(t)
+      return builtin.to_json(builtin.csv_records(t))
+    end,
+    ['csv>yaml'] = function(t)
+      return builtin.to_yaml(builtin.csv_records(t))
+    end,
+    ['json>csv'] = builtin.json_to_csv,
+    ['json>yaml'] = function(t)
+      return builtin.to_yaml(builtin.decode_json(t))
+    end,
+  }
+  local failed = {}
+  for _, case in ipairs(cases) do
+    local name = ('%s to %s: %s'):format(case.from, case.to, case.name)
+    local ok, out = pcall(convert[case.from .. '>' .. case.to], case.input)
+    if case.error then
+      if ok then
+        failed[#failed + 1] = name .. ' (not refused)'
+      end
+    elseif not ok then
+      failed[#failed + 1] = name .. ': ' .. tostring(out)
+    elseif out ~= case.output then
+      failed[#failed + 1] = ('%s\n  expected %q\n  got      %q'):format(name, case.output, out)
+    end
+  end
+  eq(table.concat(failed, '\n'), '')
+  eq(#cases, 48)
 end
 
 T['json']['to CSV refuses what is not a list of objects'] = function()

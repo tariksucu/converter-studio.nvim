@@ -2,7 +2,7 @@
 
 local M = {}
 
-M.VERSION = '1.0.0'
+M.VERSION = '1.0.1'
 -- Sent as `X-Converter-Studio-Client` with every request to the API.
 M.CLIENT = 'neovim'
 M.DEFAULT_API_URL = 'https://converter.studio/api'

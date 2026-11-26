@@ -23,7 +23,7 @@ end
 
 T[':checkhealth reports the programs, the desktop app and the key source'] = function()
   local text = health_text()
-  has(text, 'converter-studio.nvim 1.0.0 on Neovim')
+  has(text, 'converter-studio.nvim 1.0.1 on Neovim')
   has(text, 'Built in: CSV → JSON or YAML, JSON → CSV or YAML, SRT ↔ WebVTT')
   for _, name in ipairs({ 'FFmpeg', 'LibreOffice', 'Pandoc', 'ImageMagick', 'Ghostscript', 'Tesseract' }) do
     has(text, name)

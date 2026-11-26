@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.1
+
+The built-in CSV, JSON and YAML conversions follow the same rules as the other editors' plugins.
+
+- CSV: a repeated header becomes `name_2` and an empty one `column3` (they were `name (2)` and
+  `column 3`), each checked against every other name; the separator is the one the first line uses
+  most outside quotes: comma, semicolon, tab or `|` (only commas were read before).
+- JSON to YAML: an empty list or object is written `[]` or `{}`; it was an empty document, which
+  YAML reads as null. The C1 controls and the line and paragraph separators are escaped; text
+  beyond ASCII is no longer quoted.
+- JSON to CSV: lines end in CRLF, as RFC 4180 writes them (they ended in LF); an empty list says
+  there is nothing to write.
+- JSON numbers that JSON does not allow (`01`, `1.`) are refused.
+- The four editor plugins (VS Code, JetBrains, Sublime Text, Neovim) now follow the same rules and run the same test cases, so a file gives the same result in each.
+
 ## 1.0.0
 
 First release.

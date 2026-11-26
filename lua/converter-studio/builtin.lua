@@ -1,5 +1,10 @@
 -- Conversions written in Lua, with nothing to install: CSV and JSON to each other and to YAML,
 -- and subtitles between SRT and WebVTT.
+--
+-- Nothing is dropped or changed on the way: every column gets a name of its own, numbers keep the
+-- digits they were written with (9007199254740993 stays exact), and keys keep their order. The
+-- Converter Studio extensions for VS Code, JetBrains IDEs and Sublime Text follow the same rules
+-- and run the same cases (tests/data-cases.json), so a file gives the same result in each.
 
 local M = {}
 
@@ -10,9 +15,34 @@ M.MAX_BYTES = 20 * 1024 * 1024
 -- CSV (RFC 4180)
 ---------------------------------------------------------------------------------------------------
 
---- Rows of fields. Quoted fields may hold commas, quotes ("") and line breaks.
+--- The field separator of a CSV: comma, semicolon, tab or `|`, whichever its first line uses most
+--- outside quotes (the earlier of them on a tie; a comma when there is none).
+function M.separator(text)
+  text = text:gsub('^\239\187\191', ''):gsub('^[\r\n]+', '')
+  local counts = { [','] = 0, [';'] = 0, ['\t'] = 0, ['|'] = 0 }
+  local quoted = false
+  for i = 1, #text do
+    local c = text:sub(i, i)
+    if c == '"' then
+      quoted = not quoted
+    elseif not quoted and (c == '\r' or c == '\n') then
+      break
+    elseif not quoted and counts[c] then
+      counts[c] = counts[c] + 1
+    end
+  end
+  local best = ','
+  for _, sep in ipairs({ ';', '\t', '|' }) do
+    if counts[sep] > counts[best] then
+      best = sep
+    end
+  end
+  return best
+end
+
+--- Rows of fields. Quoted fields may hold separators, quotes ("") and line breaks.
 function M.parse_csv(text, sep)
-  sep = sep or ','
+  sep = sep or M.separator(text)
   text = text:gsub('^\239\187\191', '') -- byte order mark
   local rows, row, field = {}, {}, {}
   local i, n = 1, #text
@@ -69,8 +99,10 @@ function M.parse_csv(text, sep)
   return out
 end
 
+-- In double quotes when it holds a comma, a quote or a line break, or starts or ends with a space
+-- or tab.
 local function csv_field(value)
-  if value:find('[,"\r\n]') or value:match('^%s') or value:match('%s$') then
+  if value:find('[,"\r\n]') or value:find('^[ \t]') or value:find('[ \t]$') then
     return '"' .. value:gsub('"', '""') .. '"'
   end
   return value
@@ -230,11 +262,18 @@ function M.decode_json(text)
       pos = pos + 4
       return NULL
     else
-      local num = text:match('^-?%d+%.?%d*[eE]?[-+]?%d*', pos)
-      if not num or num == '' or num == '-' or not tonumber(num) then
+      -- JSON's number: -?(0|[1-9][0-9]*)(.[0-9]+)?([eE][-+]?[0-9]+)?, kept as written.
+      local int = text:match('^-?%d+', pos)
+      if not int or int:match('^-?0%d') then
         decode_error(text, pos, 'unexpected character')
       end
-      pos = pos + #num
+      local stop = pos + #int
+      local frac = text:match('^%.%d+', stop)
+      stop = stop + (frac and #frac or 0)
+      local exp = text:match('^[eE][-+]?%d+', stop)
+      stop = stop + (exp and #exp or 0)
+      local num = text:sub(pos, stop - 1)
+      pos = stop
       return { kind = 'number', text = num }
     end
   end
@@ -247,11 +286,14 @@ function M.decode_json(text)
   return result
 end
 
+local JSON_ESCAPES =
+  { ['"'] = '\\"', ['\\'] = '\\\\', ['\b'] = '\\b', ['\f'] = '\\f', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+
+-- A string as JSON writes it (as JavaScript's JSON.stringify does).
 local function json_string(s)
   return '"'
-    .. s:gsub('[%c"\\]', function(c)
-      local map = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
-      return map[c] or ('\\u%04x'):format(c:byte())
+    .. s:gsub('[%z\1-\31"\\]', function(c)
+      return JSON_ESCAPES[c] or ('\\u%04x'):format(c:byte())
     end)
     .. '"'
 end
@@ -302,23 +344,51 @@ local RESERVED = {
   n = true,
 }
 
-local function yaml_scalar(s)
-  local plain = s ~= ''
-    and s:match('^[%w_/][%w_%./%-%+ ]*$')
-    and not s:match('%s$')
+-- What a YAML file must not hold as is (in UTF-8): control characters, DEL and the C1 controls,
+-- the line and paragraph separators, the byte order mark, U+FFFE and U+FFFF.
+local function yaml_unprintable(s)
+  return s:find('[%z\1-\31\127]')
+    or s:find('\194[\128-\159]')
+    or s:find('\226\128[\168\169]')
+    or s:find('\239\187\191')
+    or s:find('\239\191[\190\191]')
+end
+
+-- Text YAML reads back as the same text without quotes: it starts with a letter, `_`, `/` or a
+-- character beyond ASCII, and goes on with letters, digits, spaces and `_ . / + ( ) @ -`.
+local function yaml_plain(s)
+  return s ~= ''
+    and s:find('^[A-Za-z_/\128-\255]') ~= nil
+    and s:find('[^A-Za-z0-9 _%./%+%(%)@%-\128-\255]') == nil
+    and s:sub(-1) ~= ' '
     and not RESERVED[s:lower()]
-    and not tonumber(s)
-    and not s:match('^0[xob]')
-    and not s:match('^[%d_%.%-:]+$')
-  if plain then
+    and not yaml_unprintable(s)
+end
+
+local YAML_ESCAPES = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+local function u_escape(code)
+  return ('\\u%04x'):format(code)
+end
+
+-- A string as YAML: plain when that reads back the same, else in double quotes.
+local function yaml_scalar(s)
+  if yaml_plain(s) then
     return s
   end
-  return '"'
-    .. s:gsub('[%c"\\]', function(c)
-      local map = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
-      return map[c] or ('\\x%02x'):format(c:byte())
-    end)
-    .. '"'
+  s = s:gsub('[%z\1-\31"\\\127]', function(c)
+    return YAML_ESCAPES[c] or u_escape(c:byte())
+  end)
+  s = s:gsub('\194([\128-\159])', function(b)
+    return u_escape(b:byte())
+  end)
+  s = s:gsub('\226\128([\168\169])', function(b)
+    return u_escape(0x2000 + b:byte() - 0x80)
+  end)
+  s = s:gsub('\239\187\191', u_escape(0xfeff))
+  s = s:gsub('\239\191([\190\191])', function(b)
+    return u_escape(0xffc0 + b:byte() - 0x80)
+  end)
+  return '"' .. s .. '"'
 end
 
 local function yaml_lines(v, indent, out)
@@ -339,7 +409,7 @@ local function yaml_lines(v, indent, out)
     end
     return nil
   end
-  if is_node(v, 'object') then
+  if is_node(v, 'object') and #v.keys > 0 then
     for _, key in ipairs(v.keys) do
       local child = v.values[key]
       local simple = inline(child)
@@ -350,7 +420,7 @@ local function yaml_lines(v, indent, out)
         yaml_lines(child, indent + 2, out)
       end
     end
-  elseif is_node(v, 'array') then
+  elseif is_node(v, 'array') and #v > 0 then
     for _, item in ipairs(v) do
       local simple = inline(item)
       if simple then
@@ -378,30 +448,56 @@ end
 -- Records: CSV ↔ JSON
 ---------------------------------------------------------------------------------------------------
 
---- CSV text → an array of objects (the first row names the keys; every value stays text).
+-- Spaces, tabs and line breaks around a header name are not part of it.
+local function trim_name(s)
+  return (s:gsub('^[ \t\r\n]+', ''):gsub('[ \t\r\n]+$', ''))
+end
+
+--- A name for each of `width` columns, every one different, so that no value is lost:
+--- - the first column with a header name keeps it;
+--- - any other column (a repeated name, an empty header cell, a cell beyond the header) gets its
+---   header name, or `column<N>` (N counted from 1) when it has none, followed by `_2`, `_3`…:
+---   the first that no column has taken yet.
+--- `id,id` gives `id`, `id_2`; a header `column2` with a row `A,B` gives `column2`, `column2_2`.
+function M.column_names(header, width)
+  local names, taken = {}, {}
+  for i = 1, #header do
+    local name = trim_name(header[i])
+    if name ~= '' and not taken[name] then
+      names[i] = name
+      taken[name] = true
+    end
+  end
+  for i = 1, width do
+    if not names[i] then
+      local base = trim_name(header[i] or '')
+      if base == '' then
+        base = 'column' .. i
+      end
+      local name, n = base, 2
+      while taken[name] do
+        name = ('%s_%d'):format(base, n)
+        n = n + 1
+      end
+      names[i] = name
+      taken[name] = true
+    end
+  end
+  return names
+end
+
+--- CSV text → an array of objects (the first row names the keys; every value stays text). Every
+--- object has every column, in the file's order; a cell a row does not have is empty.
 function M.csv_records(text)
   local rows = M.parse_csv(text)
   if #rows == 0 then
     error('the CSV file is empty', 0)
   end
-  local header, seen = {}, {}
   local width = 0
   for _, row in ipairs(rows) do
     width = math.max(width, #row)
   end
-  for i = 1, width do
-    local name = vim.trim(rows[1][i] or '')
-    if name == '' then
-      name = 'column ' .. i
-    end
-    local unique, n = name, 1
-    while seen[unique] do
-      n = n + 1
-      unique = ('%s (%d)'):format(name, n)
-    end
-    seen[unique] = true
-    header[i] = unique
-  end
+  local header = M.column_names(rows[1], width)
   local records = { kind = 'array' }
   for r = 2, #rows do
     local obj = { kind = 'object', keys = header, values = {} }
@@ -457,6 +553,9 @@ function M.json_to_csv(text)
   else
     error('JSON to CSV needs an array of objects', 0)
   end
+  if #list == 0 then
+    error('the JSON array is empty: there is nothing to write', 0)
+  end
   local columns, seen = {}, {}
   for _, item in ipairs(list) do
     if not is_node(item, 'object') then
@@ -498,7 +597,8 @@ function M.json_to_csv(text)
     end
     lines[#lines + 1] = table.concat(cells, ',')
   end
-  return table.concat(lines, '\n') .. '\n'
+  -- CRLF, as RFC 4180 and the other editors' plugins write CSV.
+  return table.concat(lines, '\r\n') .. '\r\n'
 end
 
 ---------------------------------------------------------------------------------------------------
